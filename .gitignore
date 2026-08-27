@@ -1,0 +1,34 @@
+# Moonraker upload temp files.
+# Created while a file upload is in flight, and left behind as a 0-byte stub
+# if the upload is interrupted. The number in the name changes every time
+# (moonraker.upload-2135.mru), so there is nothing meaningful to track.
+*.mru
+
+# Klipper SAVE_CONFIG backups.
+# Klipper renames the previous printer.cfg to printer-<date>_<time>.cfg on
+# every SAVE_CONFIG, so these accumulate indefinitely and each one is a full
+# copy of the config including the bed mesh. Keeping the config in git already
+# provides this history - see 'git log -p printer.cfg'.
+# Anchored to a digit on purpose so an intentional name such as
+# printer-test.cfg is not swallowed by the pattern.
+printer-[0-9]*.cfg
+
+# [save_variables] target.
+# Runtime state (which filament is loaded, material, counters), rewritten on
+# every SAVE_VARIABLE call. This is machine state, not configuration.
+variables.cfg
+
+# Editor and tool backups
+*.bak
+*~
+
+# Windows shell cruft (this repo is edited from Windows)
+Thumbs.db
+desktop.ini
+
+# NOT ignored on purpose:
+#   printer.cfg          - including its trailing #*# SAVE_CONFIG block. PID
+#                          values, input shaper results and the Cartographer
+#                          model live there and cannot be separated out, and
+#                          their history is worth keeping.
+#   audio/*.wav          - the voice clips are part of the configuration.
