@@ -8,8 +8,11 @@
 
 - [1. 決定待ち](#1-決定待ち)
 - [2. 実機での作業手順](#2-実機での作業手順)
-- [3. 保留リスト](#3-保留リスト)
+- [3. 保留リスト](#3-保留リスト) — クリティカルパスもここ
 - [4. 既知の落とし穴](#4-既知の落とし穴)
+- [5. 追加セクション](#5-追加セクション)
+- [6. `.gitignore`](#6-gitignore実装済み)
+- [7. FilaMatrix カット動作の危険分析](#7-filamatrix-カット動作の危険分析blobifier-実装後に着手)
 
 ---
 
@@ -196,10 +199,24 @@ KIAUH は通常**ファイルをコピーするだけ**でリポジトリを作�
 |---|---|---|
 | #1 | ベッドメッシュ | printer.cfg の破損ブロックは `mesh_max` が 320 だった時代の化石。`e8bde74 fix bed mesh` の 285 で手当て済みと読める。残る潜在リスクは `horizontal_move_z: 5` がモデル範囲 0.1〜5.0 の上限ちょうどという点のみ。次回スキャン後に外れ値がないか一度確認 |
 | #9 | パージ線の位置 | Blobifier 導入時に解消。`config/macro/print_start.cfg` の 2 つめの `TODO(Blobifier)` コメントの位置で、手書きパージ線ブロックごと置き換える |
-| #12 | UNLOAD のカッター動作 | Z 安全確保、送り速度の明示、X0 のマージン |
+| #12 | UNLOAD のカッター動作 | **Blobifier 実装後に着手**。危険分析と実装案は完了済み → セクション 7 |
 | — | 追加セクションの採否 | `[firmware_retraction]` と `[force_move]` のみ未決 → セクション 5 |
-| — | その他の改善提案 | QGL の `retries: 3→5`、NeoPixel のレベルシフタ、Moonraker の `trusted_clients` |
-| — | フィラメントフロー統合 | 1.1 が確定したら Orbiter Smart Sensor + Blobifier + FilaMatrix を統合した LOAD/UNLOAD を設計 |
+| — | その他の改善提案 | NeoPixel のレベルシフタ、Moonraker の `trusted_clients` |
+| — | フィラメントフロー統合 | Blobifier 実装 → 1.1（EBB ピン）確定 → Orbiter Smart Sensor + Blobifier + FilaMatrix の統合 LOAD/UNLOAD 設計 |
+
+**QGL の `retries: 3→5` は見送り**（2026-08-27 判断）。実際に収束失敗が出たら調整する。
+
+### クリティカルパス
+
+```
+Blobifier 実装
+  ├─→ #9  PRINT_START のパージ線置き換え（TODO コメント 2 箇所）
+  └─→ #12 カット動作（パージ/ワイプの場所が決まらないと設計できない）
+チャンバーセンサー設置（1.3）
+  └─→ 1.2 排気ファン極低速の温度影響を測定できる
+EBB ピン確定（1.1）
+  └─→ フィラメントフロー統合
+```
 
 **PRINT_START の細部は対応済み**: `SET_GCODE_OFFSET Z=0` 追加、`CARTOGRARPHER` typo 修正、
 冗長な `M104` 削除、M109/M190 override の S 未指定クラッシュ修正、Blobifier ワイプ
@@ -405,3 +422,140 @@ input shaper 値・Cartographer モデルは printer.cfg 本体に書かれる�
 既にコミットされていた4ファイル（`.mru` × 2、`printer-20250906_*.cfg` × 2）は
 `git rm --cached` で追跡解除済み。`--cached` なのでディスク上のファイルは残って
 いる。今後同名のものが増えても `.gitignore` が拾う。
+
+---
+
+## 7. FilaMatrix カット動作の危険分析（Blobifier 実装後に着手）
+
+Blobifier のパージ/ワイプ位置が決まらないと UNLOAD 全体の動線が決められない
+ため保留。分析と実装案は済んでいるので、着手時はここから再開する。
+
+対象は `config/macro/unload_filament.cfg` の現在の内容（コミット `74738f7` 時点）。
+実機の制約値: X `position_min: 0` / `position_endstop: 350` /
+`homing_positive_dir: true`、`max_extrude_only_distance: 101`、
+`min_extrude_temp: 170`、`safe_z_home z_hop: 10`、`_CLIENT_VARIABLE
+custom_park_dz: 10` / `idle_timeout: 43200`。
+
+### 7.1 危険度1 — ポーズ中の `G28`（14行目）
+
+CHANGE_FILAMENT → PAUSE → UNLOAD_FILAMENT が主経路なのに、その経路が一番危険。
+
+Klipper の `safe_z_home` は **Z が homed かつ `z_hop` より低い場合のみ**リフトする
+（`elif pos[2] < self.z_hop`）。**造形高さ 150mm でポーズ中は Z10 より高いので
+リフトが一切起きない。** その状態で:
+
+1. X ホーミング → `homing_positive_dir: true` なので X=350 方向へ、その高さのまま
+   盤面を横断。ノズルが最上層をなでる
+2. Y ホーミング → 同様に Y=350 方向へ横断
+3. Z ホーミング → X175 Y175 へ移動し、Cartographer touch で**造形物の真上から
+   ノズルを降ろす**
+4. Z 原点が再設定される → RESUME 後の Z 基準がずれる
+
+### 7.2 危険度2 — XY 移動の Z クリアランス無保証（15行目）
+
+`G1 X10 Y29` は現在の Z のまま水平移動する。ポーズ経由なら造形物上面 +10mm、
+PRINT_END 後なら +3mm、手動実行なら Z0.2 のこともある。
+
+**正しい定式化は絶対値の safe_z ではなく `現在Z + クリアランス`。** ノズルは
+造形済み部分の最上面にいるので `現在Z + 10mm` なら全てを越えられる。「安全のため
+Z30 へ」のような固定値は 200mm 高の造形物には無意味。
+
+### 7.3 危険度3 — `G1 E-125` が確実にエラー（21行目）
+
+`max_extrude_only_distance: 101` 超過で `Extrude only move too long`。
+マクロがそこで中断するので `RESTORE_GCODE_STATE` が実行されず、**ノズルが 250℃
+のまま放置される**。しかも `_CLIENT_VARIABLE idle_timeout: 43200` を入れたため、
+**ポーズ中はこの放置が 12 時間続く**（従来は 30 分で TURN_OFF_HEATERS）。
+明示的な安全網（ウォッチドッグ）が必要。
+
+### 7.4 危険度4 — E の押出モード未定義（21行目）
+
+`SAVE_GCODE_STATE` の後に `M83` も `G91` もない。スライサーが `M82`（絶対押出）
+だと `G1 E-125` は**絶対座標 E=-125 への移動**になる。現在 E が 3000mm なら
+-3125mm の押し出し要求。結果は 7.3 のエラーで止まるが意図と全く違う。
+以前の詳細版には `M83` があったので簡略化の際に落ちた。
+
+### 7.5 危険度5 — カット時の脱調と座標喪失（16行目）
+
+**カットの力を X 軸モーターが出している。** FilaMatrix はガントリの推力でレバーを
+押す設計なので、`position_min: 0` の機械的ストッパまで押し込むと TMC2209 が脱調
+する。CoreXY なので **A/B モーターの片方だけ脱調すると X と Y の両方がずれる。**
+加えて X0 はソフトリミットちょうどでマージンゼロ。
+
+対策の定石はカット後の X 再ホーミング。`G28 X` は Z を触らないのでポーズ中でも
+Z 基準は保たれる（ただし X=350 方向へ横断するので 7.2 の Z 退避が前提）。
+
+### 7.6 危険度6〜8
+
+- **6: 送り速度未指定**（15, 18行目）— `F` が無く直前の値を継承。この文脈では
+  `G28` 内部の最後の速度が残るので予測不能
+- **7: テンション抜きの実装欠落**（17行目）— `; slowly retract a bit` のコメント
+  だけ残り実装がない。以前の詳細版には `G1 X0 E-{cut_e_retract} F{cut_feed}` が
+  あった。押し出し圧が残ったままカットすると刃が入りにくく切断面も荒れる
+- **8: 温度 250℃ 固定**（9-10行目）— PLA を 250℃ で長時間保持すると熱劣化して
+  ノズル内で炭化する。素材別に（PLA 200-220 / PETG 230-240 / ABS・ASA 240-250）
+
+### 7.7 実装案
+
+```ini
+[gcode_macro UNLOAD_FILAMENT]
+# ---- 幾何（実機で調整）----
+variable_cut_y:            29.0   ; カッターの Y
+variable_cut_x_approach:   10.0   ; カット前後の待機 X
+variable_cut_x_press:       0.5   ; 刃を押し込む X <- 要検証（現状 0）
+variable_cut_feed:          500   ; mm/min 押し込みストローク
+variable_cut_return_feed:  3000   ; mm/min 戻り
+variable_travel_feed:      9000   ; mm/min XY 移動
+# ---- Z 退避 ----
+variable_z_clearance:      10.0   ; XY 移動前に「現在Z + この値」まで上げる
+variable_z_floor:          30.0   ; ただし絶対 Z がこれ未満にはしない
+# ---- フィラメント ----
+variable_temp:              250   ; TEMP= で上書き可
+variable_tension_relief:    1.0   ; カット前のリトラクト
+variable_cut_e_retract:     5.0   ; 押し込みストローク中に同時に引く量
+variable_unload_length:   125.0   ; カット後の合計リトラクト
+variable_unload_chunk:     50.0   ; max_extrude_only_distance(101) 以下必須
+variable_unload_feed:      1200
+# ---- 安全 ----
+variable_rehome_x:            1   ; カット後に G28 X
+variable_standby_temp:        0   ; 0=OFF、>0=待機温度
+variable_watchdog_timeout:  600   ; 秒。超えたらヒーター強制OFF
+```
+
+処理順:
+
+```
+1.  ガード: 印刷中かつ未ポーズなら拒否
+2.  ウォッチドッグを最初に予約 (UPDATE_DELAYED_GCODE ID=_UNLOAD_WATCHDOG)
+      -> 途中でエラー中断してもヒーターが必ず落ちる          (7.3)
+3.  SAVE_GCODE_STATE / G90 / M83 を明示                       (7.4)
+4.  未ホーミングなら G28 せずに action_raise_error で中断
+      「ベッド上に造形物が無いことを目視確認してから G28 して」
+      -> Cartographer touch は造形物の上でも降りるので人間が確認 (7.1)
+5.  G1 Z{ [現在Z + z_clearance, z_floor]|max } で退避         (7.2)
+6.  G1 X{cut_x_approach} Y{cut_y} F{travel_feed}              (7.6-6)
+7.  M109 S{temp}（退避後に加熱 = 造形物の上で垂れない）        (7.6-8)
+8.  G1 E-{tension_relief} でテンション抜き                    (7.6-7)
+9.  G1 X{cut_x_press} E-{cut_e_retract} F{cut_feed} -> 戻り
+10. {% if rehome_x %} G28 X {% endif %}                       (7.5)
+11. unload_length を unload_chunk 単位に分割してリトラクト     (7.3)
+12. M104 S{standby_temp} / RESTORE_GCODE_STATE
+13. ウォッチドッグを解除 (DURATION=0)
+```
+
+`max_extrude_only_distance` は引き上げず**分割**する方針。この値は暴走押出を
+止める安全網なので弱めたくないし、`load_filament.cfg` が既に `E50` × 3 回で
+同じことをやっているので一貫する。
+
+### 7.8 着手時に決める必要があること
+
+1. **`X0` でカットが完了しているか（実機確認）** — FilaMatrix によっては X0 では
+   刃が届き切らず `position_min: -2` のような負の値が必要。逆に手前で切れているなら
+   `cut_x_press` を 1.0 にしてソフトリミットのマージンを取れる。一度カットして
+   切断面を確認する
+2. **アンロード方針** — 以前の詳細版は `user_pull_retract: 20.0` で「センサーが
+   OFF になるほど引かない」半自動設計。現在の版は `E-125` の全自動。Orbiter Smart
+   Sensor が静的な有無を答えられない（1.1）ので**全自動のほうが今のハード構成と
+   相性が良い**（推奨）
+3. **カット後の `G28 X`** — 推奨は「入れる」。脱調していなければ数秒の無駄、
+   していれば座標を復旧できる。Z を触らないのでポーズ復帰も安全
