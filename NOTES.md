@@ -197,7 +197,7 @@ KIAUH は通常**ファイルをコピーするだけ**でリポジトリを作�
 | #1 | ベッドメッシュ | printer.cfg の破損ブロックは `mesh_max` が 320 だった時代の化石。`e8bde74 fix bed mesh` の 285 で手当て済みと読める。残る潜在リスクは `horizontal_move_z: 5` がモデル範囲 0.1〜5.0 の上限ちょうどという点のみ。次回スキャン後に外れ値がないか一度確認 |
 | #9 | パージ線の位置 | Blobifier 導入時に解消。`config/macro/print_start.cfg` の 2 つめの `TODO(Blobifier)` コメントの位置で、手書きパージ線ブロックごと置き換える |
 | #12 | UNLOAD のカッター動作 | Z 安全確保、送り速度の明示、X0 のマージン |
-| — | 追加セクションの採否 | → セクション 5 |
+| — | 追加セクションの採否 | `[firmware_retraction]` と `[force_move]` のみ未決 → セクション 5 |
 | — | その他の改善提案 | QGL の `retries: 3→5`、NeoPixel のレベルシフタ、Moonraker の `trusted_clients` |
 | — | フィラメントフロー統合 | 1.1 が確定したら Orbiter Smart Sensor + Blobifier + FilaMatrix を統合した LOAD/UNLOAD を設計 |
 
@@ -251,7 +251,28 @@ Cartographer と同じ `probe` オブジェクトを提供するので、有効�
 
 ---
 
-## 5. 追加を検討しているセクション
+## 5. 追加セクション
+
+**導入済み**: `[gcode_arcs]` / `[save_variables]` / `[exclude_object]`
+（`config/software/` に1機能1ファイルで配置。5.1 / 5.2 / 5.4 参照）
+**未導入**: `[firmware_retraction]` / `[force_move]`（5.3 / 5.5）
+
+### 置き場所の方針
+
+これらは `config/software/` に置く。理由:
+
+- `config/software/` は既に「ハードではない機能」（`bed_mesh` / `safe_z_home` /
+  `quad_gantry_level`）の置き場になっており、今回の3つも同じ性質
+- `printer.cfg` は `[mcu]` 群・ホスト温度センサー・include・`[printer]` だけの
+  薄い入口として保っておきたい。加えて printer.cfg 末尾は SAVE_CONFIG が
+  書き換えるので、手書き設定を増やすほど差分が読みにくくなる
+- `config/hardware/optional/` は使わない。あのディレクトリは「常に存在するとは
+  限らないハードウェア」用で、自動 include されない前提。今回の3つは純粋な
+  ソフト機能で常に有効なので、意味が食い違う
+
+ファイル名 = 機能名にしておけば「どこで設定しているか」がファイル一覧で分かる。
+glob include なのでファイル単位で無効化はできない（無効化したいときは
+`optional/` に移動するか、セクション名をコメントアウトする）。
 
 ### 5.0 ノズル加熱タイミングについて（変更しなかった理由）
 
@@ -261,7 +282,7 @@ Cartographer と同じ `probe` オブジェクトを提供するので、有効�
 垂れの対策は Blobifier のブラシワイプ（`print_start.cfg` の 1 つめの
 `TODO(Blobifier)`）で行う方針にしたので、加熱順序は触っていない。
 
-### 5.1 `[exclude_object]` — 印刷中に個別オブジェクトをキャンセル
+### 5.1 `[exclude_object]` — 印刷中に個別オブジェクトをキャンセル【導入済み】
 
 350mm ベッドで多数部品を並べる運用では効果が大きい。1 個だけ剥がれた
 ときにプレート全体を中止しなくて済む。
@@ -283,7 +304,7 @@ Cartographer と同じ `probe` オブジェクトを提供するので、有効�
 アップロードごとに gcode 全体をスキャンする。Pi 4 で大きいファイルだと
 数秒〜十数秒アップロードが遅くなる。それ以外の副作用はない。
 
-### 5.2 `[gcode_arcs]` — G2/G3 円弧移動
+### 5.2 `[gcode_arcs]` — G2/G3 円弧移動【導入済み】
 
 ```ini
 [gcode_arcs]
@@ -300,7 +321,7 @@ OrcaSlicer / PrusaSlicer には arc fitting 設定があり、うっかり有効
 上記が起きる。デメリットが無いので保険として入れておく価値がある。
 `resolution` は円弧を分割する弦の長さ（デフォルト 1.0mm、小さいほど滑らか）。
 
-### 5.3 `[firmware_retraction]` — G10/G11
+### 5.3 `[firmware_retraction]` — G10/G11【未導入】
 
 ```ini
 [firmware_retraction]
@@ -322,7 +343,7 @@ Orbiter のダイレクトドライブなら `retract_length` は 0.4〜0.8mm �
 推奨しない。wipe-while-retract やオブジェクト単位の設定が使えなくなり、
 スライサーのリトラクト制御より機能が劣る。
 
-### 5.4 `[save_variables]` — 再起動をまたぐ状態保存
+### 5.4 `[save_variables]` — 再起動をまたぐ状態保存【導入済み】
 
 ```ini
 [save_variables]
@@ -346,7 +367,7 @@ answer できない（→ 1.1）ため、装填状態はソフト側で覚えて
 `variables.cfg` は config ディレクトリに出来るので `.gitignore` 対象
 （→ セクション 6）。
 
-### 5.5 `[force_move]` — 未ホーミングでのステッパ操作
+### 5.5 `[force_move]` — 未ホーミングでのステッパ操作【未導入】
 
 ```ini
 [force_move]
@@ -365,9 +386,9 @@ enable_force_move: True
 
 ---
 
-## 6. `.gitignore` の方針
+## 6. `.gitignore`【実装済み】
 
-まだ作っていない。除外候補と理由：
+除外の理由：
 
 | パターン | 対象 | 除外すべき理由 |
 |---|---|---|
@@ -381,13 +402,6 @@ enable_force_move: True
 input shaper 値・Cartographer モデルは printer.cfg 本体に書かれるので分離
 できないし、これらの変化履歴はむしろ残したい。
 
-**既にコミットされているものを外す手順**（実行するなら）:
-
-```bash
-git rm --cached config/hardware/moonraker.upload-2135.mru
-git rm --cached config/hardware/toolhead/moonraker.upload-669.mru
-git rm --cached printer-20250906_135603.cfg
-git rm --cached printer-20250906_140358.cfg
-```
-
-`--cached` なので実機側のファイルは消えない。追跡から外すだけ。
+既にコミットされていた4ファイル（`.mru` × 2、`printer-20250906_*.cfg` × 2）は
+`git rm --cached` で追跡解除済み。`--cached` なのでディスク上のファイルは残って
+いる。今後同名のものが増えても `.gitignore` が拾う。
