@@ -195,11 +195,15 @@ KIAUH は通常**ファイルをコピーするだけ**でリポジトリを作�
 | # | 項目 | メモ |
 |---|---|---|
 | #1 | ベッドメッシュ | printer.cfg の破損ブロックは `mesh_max` が 320 だった時代の化石。`e8bde74 fix bed mesh` の 285 で手当て済みと読める。残る潜在リスクは `horizontal_move_z: 5` がモデル範囲 0.1〜5.0 の上限ちょうどという点のみ。次回スキャン後に外れ値がないか一度確認 |
-| #9 | パージ線の位置 | X10.1 はメッシュ領域（`mesh_min: 30,5`）の外側で Z 補正が外挿になる |
+| #9 | パージ線の位置 | Blobifier 導入時に解消。`config/macro/print_start.cfg` の 2 つめの `TODO(Blobifier)` コメントの位置で、手書きパージ線ブロックごと置き換える |
 | #12 | UNLOAD のカッター動作 | Z 安全確保、送り速度の明示、X0 のマージン |
-| — | PRINT_START 残件 | `SET_GCODE_OFFSET Z=0` の追加、ノズル加熱タイミング（ベッド加熱中に 150℃ で垂れる）、`CARTOGRARPHER` の typo、M109/M190 override の `params.S` デフォルト |
-| — | その他の改善提案 | `[exclude_object]`、`[gcode_arcs]`、QGL の `retries: 3→5`、NeoPixel のレベルシフタ、Moonraker の `trusted_clients` |
+| — | 追加セクションの採否 | → セクション 5 |
+| — | その他の改善提案 | QGL の `retries: 3→5`、NeoPixel のレベルシフタ、Moonraker の `trusted_clients` |
 | — | フィラメントフロー統合 | 1.1 が確定したら Orbiter Smart Sensor + Blobifier + FilaMatrix を統合した LOAD/UNLOAD を設計 |
+
+**PRINT_START の細部は対応済み**: `SET_GCODE_OFFSET Z=0` 追加、`CARTOGRARPHER` typo 修正、
+冗長な `M104` 削除、M109/M190 override の S 未指定クラッシュ修正、Blobifier ワイプ
+挿入位置のコメント 2 箇所。ノズル加熱タイミングは**意図的に変更していない**（下記 5.0 参照）。
 
 ---
 
@@ -244,3 +248,146 @@ Klipper は `RawConfigParser(strict=False)` で設定を読むので、
 Cartographer と同じ `probe` オブジェクトを提供するので、有効化すると
 競合する。`nevermore.cfg` を有効化する際は同ファイル冒頭の
 既知バグ（serial パス、`restart_methoda`、`gas_level`）を先に直す。
+
+---
+
+## 5. 追加を検討しているセクション
+
+### 5.0 ノズル加熱タイミングについて（変更しなかった理由）
+
+`M104 S150` はベッド加熱（`M190`）より前に置いたままにしてある。ベッドが
+100℃ に達するまでノズルが 150℃ で垂れ続けるのは事実だが、その間にツール
+ヘッド全体が熱的に落ち着くことは Cartographer の測定精度には有利に働く。
+垂れの対策は Blobifier のブラシワイプ（`print_start.cfg` の 1 つめの
+`TODO(Blobifier)`）で行う方針にしたので、加熱順序は触っていない。
+
+### 5.1 `[exclude_object]` — 印刷中に個別オブジェクトをキャンセル
+
+350mm ベッドで多数部品を並べる運用では効果が大きい。1 個だけ剥がれた
+ときにプレート全体を中止しなくて済む。
+
+```ini
+[exclude_object]
+```
+
+加えて `moonraker.conf` の `[file_manager]` を
+`enable_object_processing: True` に変更する必要がある。
+
+**仕組み**: Moonraker がアップロードされた gcode を前処理して
+`EXCLUDE_OBJECT_DEFINE` / `EXCLUDE_OBJECT_START` / `EXCLUDE_OBJECT_END`
+を挿入する。スライサー側が Klipper 形式のオブジェクトラベルを出力できる
+場合（OrcaSlicer / PrusaSlicer の「オブジェクトにラベルを付ける」）は
+そちらでもよい。
+
+**唯一のコスト**: `enable_object_processing: True` にすると Moonraker が
+アップロードごとに gcode 全体をスキャンする。Pi 4 で大きいファイルだと
+数秒〜十数秒アップロードが遅くなる。それ以外の副作用はない。
+
+### 5.2 `[gcode_arcs]` — G2/G3 円弧移動
+
+```ini
+[gcode_arcs]
+resolution: 0.1
+```
+
+**無いと何が起きるか**: G2/G3 は `Unknown command` になる。これは致命的
+エラーではないので印刷は続くが、**その円弧移動が丸ごと実行されない**。
+次の G1 まで直線で飛ぶので形状が崩れ、押出量もずれる。ログを見ていないと
+気づきにくい壊れ方をする。
+
+現在スライサーの arc fitting を使っていないなら実害はないが、
+OrcaSlicer / PrusaSlicer には arc fitting 設定があり、うっかり有効にすると
+上記が起きる。デメリットが無いので保険として入れておく価値がある。
+`resolution` は円弧を分割する弦の長さ（デフォルト 1.0mm、小さいほど滑らか）。
+
+### 5.3 `[firmware_retraction]` — G10/G11
+
+```ini
+[firmware_retraction]
+retract_length: 0.5
+retract_speed: 35
+unretract_extra_length: 0
+unretract_speed: 35
+```
+
+Orbiter のダイレクトドライブなら `retract_length` は 0.4〜0.8mm 程度。
+
+**主な用途はスライサーではなく 2 つ**:
+
+1. `_CLIENT_VARIABLE` の `variable_use_fw_retract: True` が使えるようになり、
+   PAUSE / RESUME のリトラクトが印刷中の設定と一致する
+2. `SET_RETRACTION` で再スライスせずにリトラクト量を試せる
+
+**注意**: スライサー側のファームウェアリトラクトを有効にすることは
+推奨しない。wipe-while-retract やオブジェクト単位の設定が使えなくなり、
+スライサーのリトラクト制御より機能が劣る。
+
+### 5.4 `[save_variables]` — 再起動をまたぐ状態保存
+
+```ini
+[save_variables]
+filename: ~/printer_data/config/variables.cfg
+```
+
+`SET_GCODE_VARIABLE` の値は再起動で消えるが、これは消えない。
+
+```
+SAVE_VARIABLE VARIABLE=filament_loaded VALUE=True
+{printer.save_variables.variables.filament_loaded}
+```
+
+**フィラメントフロー統合（Orbiter + Blobifier + FilaMatrix）でこれが要る。**
+「今フィラメントが装填されているか」「装填されている素材」「カッター刃の
+使用回数」といった状態は、Klipper 再起動や電源断をまたいで保持されないと
+意味がない。特に Orbiter Smart Sensor がモーションセンサーで静的な有無を
+answer できない（→ 1.1）ため、装填状態はソフト側で覚えておく必要がある。
+
+**注意点**: 呼ぶたびにファイル全体を書き直すので、ループ内で連打しない。
+`variables.cfg` は config ディレクトリに出来るので `.gitignore` 対象
+（→ セクション 6）。
+
+### 5.5 `[force_move]` — 未ホーミングでのステッパ操作
+
+```ini
+[force_move]
+enable_force_move: True
+```
+
+`FORCE_MOVE` と `SET_KINEMATIC_POSITION` が使えるようになる。ガントリが
+上端で引っかかって Z がホーミングできない、QGL が中断して Z モーターが
+ずれた、といった復旧作業で有用。ハードを頻繁にいじっている今の状況では
+入れておく価値がある。
+
+**ただし足を撃つ道具**: これらのコマンドはリミットチェックを一切通らない。
+`SET_KINEMATIC_POSITION` は「実際とは違う位置にいる」と Klipper に
+思い込ませるので、その後の通常移動でツールヘッドをぶつけられる。
+理解して使うこと。
+
+---
+
+## 6. `.gitignore` の方針
+
+まだ作っていない。除外候補と理由：
+
+| パターン | 対象 | 除外すべき理由 |
+|---|---|---|
+| `*.mru` | `config/hardware/moonraker.upload-2135.mru` など | Moonraker がファイルアップロード中に作る一時ファイル。中断すると 0 バイトの残骸が残る。番号は毎回変わるので追跡する意味が全くない。**既に 2 個コミットされている** |
+| `printer-[0-9]*.cfg` | `printer-20250906_135603.cfg` など | Klipper の SAVE_CONFIG バックアップ。`SAVE_CONFIG` するたびに旧 printer.cfg がこの名前にリネームされて増え続ける。中身は printer.cfg 全体＋メッシュなので大きい。**git で履歴管理している以上、これは完全な重複**（`git log -p printer.cfg` で同じものが取れる）。`printer-*.cfg` ではなく数字始まりに限定すると、`printer-test.cfg` のような意図的な名前を誤って無視しない |
+| `variables.cfg` | 5.4 を導入した場合 | `[save_variables]` の保存先。実行時の状態（装填中の素材など）が印刷ごとに書き換わるので、コミットすると差分ノイズになる。設定ではなくランタイムデータ |
+| `*.bak` | — | エディタ・各種ツールのバックアップ |
+| `Thumbs.db` / `desktop.ini` | — | Windows 側で作業しているので念のため |
+
+**除外しないもの**: printer.cfg 末尾の `#*# SAVE_CONFIG` ブロック。PID 値・
+input shaper 値・Cartographer モデルは printer.cfg 本体に書かれるので分離
+できないし、これらの変化履歴はむしろ残したい。
+
+**既にコミットされているものを外す手順**（実行するなら）:
+
+```bash
+git rm --cached config/hardware/moonraker.upload-2135.mru
+git rm --cached config/hardware/toolhead/moonraker.upload-669.mru
+git rm --cached printer-20250906_135603.cfg
+git rm --cached printer-20250906_140358.cfg
+```
+
+`--cached` なので実機側のファイルは消えない。追跡から外すだけ。
